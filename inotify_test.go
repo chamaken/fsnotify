@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-var TIMEOUT = 100 * time.Millisecond
+var TIMEOUT = 2000 * time.Millisecond
 
 func TestInotifyEvents(t *testing.T) {
 	// Create an inotify watcher instance and initialize it
@@ -201,6 +201,7 @@ func TestIgnoredEvents(t *testing.T) {
 		t.Fatalf("watcher entries should be 0, but got: %d", watcher.length())
 	}
 	watcher.Close()
+	time.Sleep(TIMEOUT)
 	if watcher.isRunning {
 		t.Fatal("still running after Close()")
 	}

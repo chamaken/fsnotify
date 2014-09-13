@@ -6,6 +6,27 @@
 
 package fsnotify
 
+/*
+#include <sys/select.h>
+
+// cgo gets upset when we use 'select'
+static int my_select (int nfds, fd_set *readfds, fd_set *writefds, fd_set *errorfds, struct timeval *timeout) {
+    return select(nfds, readfds, writefds, errorfds, timeout);
+}
+
+// cgo refuses to resolve the FD_* macros.
+static void MY_FD_ZERO (fd_set *fdset) {
+    FD_ZERO(fdset);
+}
+static void MY_FD_SET (int fd, fd_set *fdset) {
+    FD_SET(fd, fdset);
+}
+static int MY_FD_ISSET (int fd, fd_set *fdset) {
+    return FD_ISSET(fd, fdset);
+}
+*/
+import "C"
+
 import (
 	"errors"
 	"fmt"
@@ -15,6 +36,7 @@ import (
 	"sync"
 	"syscall"
 	"unsafe"
+	"log"
 )
 
 // Watcher watches a set of files, delivering events to a channel.
@@ -139,10 +161,22 @@ func (w *Watcher) readEvents() {
 		n     int                                     // Number of bytes read with read()
 		errno error                                   // Syscall errno
 	)
+	var rfds C.fd_set
+	var timeout C.struct_timeval
 
 	w.isRunning = true
 	defer func() { w.isRunning = false }()
 	for {
+		// Select to see if data available
+		timeout.tv_sec = 1 // XXX: just testing
+		C.MY_FD_ZERO(&rfds)
+		C.MY_FD_SET(C.int(w.fd), &rfds)
+		_, errno = C.my_select(C.int(w.fd + 1), &rfds, nil, nil, &timeout)
+		log.Printf("select returns: %d, errno: %v", n, errno)
+		if errno != nil {
+			w.Errors <- os.NewSyscallError("select", errno)
+		}
+
 		// See if there is a message on the "done" channel
 		select {
 		case <-w.done:
@@ -153,7 +187,13 @@ func (w *Watcher) readEvents() {
 		default:
 		}
 
-		n, errno = syscall.Read(w.fd, buf[:])
+		// Check select result to see if Read will block, only read if no blocking.
+		log.Printf("FD_ISSET - w.fd: %v\n", C.MY_FD_ISSET(C.int(w.fd), &rfds))
+		if C.MY_FD_ISSET(C.int(w.fd), &rfds) != 0 {
+			n, errno = syscall.Read(w.fd, buf[:])
+		} else {
+			continue
+		}
 
 		// If EOF is received
 		if n == 0 {
