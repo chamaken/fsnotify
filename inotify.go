@@ -15,7 +15,10 @@ import (
 	"sync"
 	"syscall"
 	"unsafe"
+	"log"
 )
+
+var 	selectWaitTime = (int64)(100 * 10 ^ 6)
 
 // Watcher watches a set of files, delivering events to a channel.
 type Watcher struct {
@@ -139,10 +142,22 @@ func (w *Watcher) readEvents() {
 		n     int                                     // Number of bytes read with read()
 		errno error                                   // Syscall errno
 	)
+	rfds := &syscall.FdSet{}
+	timeout := &syscall.Timeval{}
 
 	w.isRunning = true
 	defer func() { w.isRunning = false }()
 	for {
+		// Select to see if data available
+		*timeout = syscall.NsecToTimeval(selectWaitTime)
+		FD_ZERO(rfds)
+		FD_SET(rfds, w.fd)
+		n, errno = syscall.Select(w.fd+1, rfds, nil, nil, timeout)
+		log.Printf("select returns: %d, errno: %v", n, errno)
+		if errno != nil {
+			w.Errors <- os.NewSyscallError("select", errno)
+		}
+
 		// See if there is a message on the "done" channel
 		select {
 		case <-w.done:
@@ -153,7 +168,13 @@ func (w *Watcher) readEvents() {
 		default:
 		}
 
-		n, errno = syscall.Read(w.fd, buf[:])
+		// Check select result to see if Read will block, only read if no blocking.
+		log.Printf("FD_ISSET - w.fd: %v\n", FD_ISSET(rfds, w.fd))
+		if FD_ISSET(rfds, w.fd) {
+			n, errno = syscall.Read(w.fd, buf[:])
+		} else {
+			continue
+		}
 
 		// If EOF is received
 		if n == 0 {
@@ -263,4 +284,18 @@ func (w *Watcher) length() int {
                 panic("internal maps lengh is differ")
         }
         return len(w.watches)
+}
+
+func FD_SET(p *syscall.FdSet, i int) {
+	p.Bits[i/64] |= 1 << uint(i) % 64
+}
+
+func FD_ISSET(p *syscall.FdSet, i int) bool {
+	return (p.Bits[i/64] & (1 << uint(i) % 64)) != 0
+}
+
+func FD_ZERO(p *syscall.FdSet) {
+	for i := range p.Bits {
+		p.Bits[i] = 0
+	}
 }
